@@ -54,7 +54,9 @@ jobs:
         run: |
           godot --headless --import || true
           godot --headless -s tests/autoplay.gd | tee test.log
-          grep -q "ECHO COMPLETE" test.log
+          grep -q "ALL MISSIONS COMPLETE lang=en" test.log
+          godot --headless -s tests/autoplay.gd -- fr | tee test_fr.log
+          grep -q "ALL MISSIONS COMPLETE lang=fr" test_fr.log
 
       - name: Export builds
         env:

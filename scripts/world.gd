@@ -29,8 +29,14 @@ const ROUTE := [
 	Vector2(850, 2250), Vector2(930, 2750), Vector2(980, 3300), Vector2(1000, 3900), Vector2(1000, 5200),
 ]
 
-var era := "modern"  # "modern" or "1942"
+var era := "modern"  # "modern", "1942" or "sable"
+var lang := "en"
 var gate_open := false
+
+# Sable Island: a 40 km crescent of sand, drawn as a chain of circles (west to east).
+const SABLE_CENTRE := Vector2(2600, -900)
+const SABLE_LEN := 2600.0
+const SABLE_R := 70.0
 
 var c_land := Color("d9cfae")
 var c_land_edge := Color("8a7f5c")
@@ -42,7 +48,14 @@ var c_grid := Color(0.2, 0.3, 0.35, 0.12)
 
 func set_era(e: String) -> void:
 	era = e
-	if era == "1942":
+	if era == "sable":
+		c_land = Color("e3d3a4")
+		c_land_edge = Color("b8a571")
+		c_water = Color("6f9fb3")
+		c_deep = Color("4f8299")
+		c_label = Color("1d3440")
+		c_grid = Color(0.1, 0.2, 0.3, 0.12)
+	elif era == "1942":
 		c_land = Color("2b2a24")
 		c_land_edge = Color("5a5440")
 		c_water = Color("10212b")
@@ -68,7 +81,20 @@ static func _dist_to_segment(p: Vector2, a: Vector2, b: Vector2) -> float:
 	return p.distance_to(a + ab * t)
 
 
+func sable_points() -> PackedVector2Array:
+	var pts := PackedVector2Array()
+	for i in 41:
+		var u := float(i) / 40.0 - 0.5
+		pts.append(SABLE_CENTRE + Vector2(u * SABLE_LEN, -260.0 * cos(u * PI)))
+	return pts
+
+
 func is_water(p: Vector2, margin := 0.0) -> bool:
+	if era == "sable":
+		for q in sable_points():
+			if p.distance_to(q) < SABLE_R + margin:
+				return false
+		return true
 	for isl in ISLANDS:
 		if p.distance_to(isl[0]) < isl[1] + margin:
 			return false
@@ -111,7 +137,14 @@ func _capsule(a: Vector2, b: Vector2, r: float, c: Color) -> void:
 		draw_colored_polygon(PackedVector2Array([a + n, b + n, b - n, a - n]), c)
 
 
+func _t(en: String, fr: String) -> String:
+	return fr if lang == "fr" else en
+
+
 func _draw() -> void:
+	if era == "sable":
+		_draw_sable()
+		return
 	var big := Rect2(-3000, -2500, 8000, 9000)
 	draw_rect(big, c_land)
 	# water with a shoreline band
@@ -142,11 +175,11 @@ func _draw() -> void:
 	# place names
 	var f := ThemeDB.fallback_font
 	var names := [
-		[Vector2(-260, -40), "BEDFORD BASIN"], [Vector2(560, 1040), "THE NARROWS"],
+		[Vector2(-260, -40), _t("BEDFORD BASIN", "BASSIN DE BEDFORD")], [Vector2(560, 1040), _t("THE NARROWS", "LE GOULET")],
 		[Vector2(-250, 1900), "HALIFAX"], [Vector2(1250, 1500), "DARTMOUTH"],
-		[Vector2(1440, 2990), "McNABS ISLAND"], [Vector2(930, 2160), "George's Is."],
-		[Vector2(330, 2640), "Point Pleasant"], [Vector2(80, 3560), "Chebucto Head"],
-		[Vector2(820, 4300), "ATLANTIC OCEAN"],
+		[Vector2(1440, 2990), _t("McNABS ISLAND", "ÎLE McNABS")], [Vector2(930, 2160), _t("George's Is.", "Île George")],
+		[Vector2(330, 2640), "Point Pleasant"], [Vector2(80, 3560), _t("Chebucto Head", "Cap Chebucto")],
+		[Vector2(820, 4300), _t("ATLANTIC OCEAN", "OCÉAN ATLANTIQUE")],
 	]
 	for n in names:
 		draw_string(f, n[0], n[1], HORIZONTAL_ALIGNMENT_LEFT, -1, 30, c_label)
@@ -171,4 +204,32 @@ func _draw_net() -> void:
 		draw_circle(g[2].lerp(g[3], i / 11.0), 6.0, net)
 	if not gate_open:
 		draw_line(g[1], g[2], Color("e0b84f"), 3.0)
-	draw_string(ThemeDB.fallback_font, g[1] + Vector2(0, -24), "A/S GATE", HORIZONTAL_ALIGNMENT_LEFT, -1, 22, net)
+	draw_string(ThemeDB.fallback_font, g[1] + Vector2(0, -24), _t("A/S GATE", "PORTE ANTI-SOUS-MARINE"), HORIZONTAL_ALIGNMENT_LEFT, -1, 22, net)
+
+
+func _draw_sable() -> void:
+	draw_rect(Rect2(-4000, -5000, 12000, 10000), c_deep)
+	# Sable Bank: shallower water around the island
+	draw_circle(SABLE_CENTRE + Vector2(0, -100), 2300.0, c_water)
+	draw_circle(SABLE_CENTRE + Vector2(-900, 300), 1500.0, c_water)
+	draw_circle(SABLE_CENTRE + Vector2(0, -100), 1100.0, Color(c_water, 1.0).lightened(0.12))
+	# The Gully: deep submarine canyon to the east
+	var gully := PackedVector2Array([Vector2(4300, -2600), Vector2(4700, -2500), Vector2(4500, -400), Vector2(4250, 400), Vector2(4000, 300), Vector2(4150, -600)])
+	draw_colored_polygon(gully, c_deep.darkened(0.25))
+	for x in range(-4000, 8000, 370):
+		draw_line(Vector2(x, -5000), Vector2(x, 5000), c_grid, 1.0)
+	for y in range(-5000, 5000, 370):
+		draw_line(Vector2(-4000, y), Vector2(8000, y), c_grid, 1.0)
+	var pts := sable_points()
+	for q in pts:
+		draw_circle(q, SABLE_R + 22.0, Color(1, 1, 1, 0.35))   # surf
+	for q in pts:
+		draw_circle(q, SABLE_R + 6.0, c_land_edge)
+	for q in pts:
+		draw_circle(q, SABLE_R, c_land)
+	draw_circle(SABLE_CENTRE + Vector2(-80, -250), 26.0, Color("8fae6a"))  # marram grass and the station
+	var f := ThemeDB.fallback_font
+	draw_string(f, SABLE_CENTRE + Vector2(-260, -430), _t("SABLE ISLAND", "ÎLE DE SABLE"), HORIZONTAL_ALIGNMENT_LEFT, -1, 34, c_label)
+	draw_string(f, SABLE_CENTRE + Vector2(-700, 900), _t("SABLE ISLAND BANK", "BANC DE L'ÎLE DE SABLE"), HORIZONTAL_ALIGNMENT_LEFT, -1, 28, c_label)
+	draw_string(f, Vector2(4000, -2700), _t("THE GULLY (marine protected area)", "LE GULLY (zone de protection marine)"), HORIZONTAL_ALIGNMENT_LEFT, -1, 24, c_label)
+	draw_string(f, Vector2(-3600, 200), _t("< to Halifax 160 nm", "< vers Halifax 160 nm"), HORIZONTAL_ALIGNMENT_LEFT, -1, 24, c_label)
