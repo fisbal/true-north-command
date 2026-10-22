@@ -1,0 +1,103 @@
+name: Build web, Windows and Android
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+env:
+  GODOT_VERSION: "4.3"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Install Godot and export templates
+        run: |
+          curl -sSL -o godot.zip https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-stable/Godot_v${GODOT_VERSION}-stable_linux.x86_64.zip
+          unzip -q godot.zip && mv Godot_v${GODOT_VERSION}-stable_linux.x86_64 /usr/local/bin/godot
+          curl -sSL -o tpl.tpz https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-stable/Godot_v${GODOT_VERSION}-stable_export_templates.tpz
+          mkdir -p ~/.local/share/godot/export_templates
+          unzip -q tpl.tpz && mv templates ~/.local/share/godot/export_templates/${GODOT_VERSION}.stable
+          rm -f godot.zip tpl.tpz
+
+      - name: Configure Android signing (debug key for test builds)
+        run: |
+          mkdir -p ~/.config/godot ~/keys
+          keytool -keyalg RSA -genkeypair -alias androiddebugkey -keypass android -keystore ~/keys/debug.keystore \
+            -storepass android -dname "CN=Android Debug,O=Android,C=US" -validity 9999 -deststoretype pkcs12
+          cat > ~/.config/godot/editor_settings-${GODOT_VERSION}.tres <<CFG
+          [gd_resource type="EditorSettings" format=3]
+
+          [resource]
+          export/android/android_sdk_path = "$ANDROID_SDK_ROOT"
+          export/android/debug_keystore = "$HOME/keys/debug.keystore"
+          export/android/debug_keystore_user = "androiddebugkey"
+          export/android/debug_keystore_pass = "android"
+          CFG
+          sed -i 's/^          //' ~/.config/godot/editor_settings-${GODOT_VERSION}.tres
+
+      - name: Import project and run the smoke test
+        run: |
+          godot --headless --import || true
+          godot --headless -s tests/autoplay.gd | tee test.log
+          grep -q "ECHO COMPLETE" test.log
+
+      - name: Export builds
+        env:
+          GODOT_ANDROID_KEYSTORE_RELEASE_USER: androiddebugkey
+          GODOT_ANDROID_KEYSTORE_RELEASE_PASSWORD: android
+        run: |
+          export GODOT_ANDROID_KEYSTORE_RELEASE_PATH="$HOME/keys/debug.keystore"
+          mkdir -p build/web build/windows build/android
+          godot --headless --export-release "Web" build/web/index.html
+          godot --headless --export-release "Windows" build/windows/TrueNorthCommand.exe
+          godot --headless --export-release "Android" build/android/TrueNorthCommand.apk
+          rm -f build/android/*.idsig
+          ls -la build/*
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: TrueNorthCommand-windows
+          path: build/windows/TrueNorthCommand.exe
+      - uses: actions/upload-artifact@v4
+        with:
+          name: TrueNorthCommand-android
+          path: build/android/TrueNorthCommand.apk
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: build/web
+
+      - name: Attach builds to the GitHub Release (tags only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            build/windows/TrueNorthCommand.exe
+            build/android/TrueNorthCommand.apk
+
+  pages:
+    # Needs Settings → Pages → Source: "GitHub Actions" (free on public repos).
+    needs: build
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - id: deploy
+        uses: actions/deploy-pages@v4
