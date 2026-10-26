@@ -5,6 +5,8 @@ extends Node2D
 ##   Mission 2 "Sable Island Boarding"
 ## English and French. One scene; each mission is a small state machine.
 
+const WindowBar = preload("res://scripts/window_bar.gd")
+
 const WorldScript := preload("res://scripts/world.gd")
 const VesselScript := preload("res://scripts/vessel.gd")
 const View3DScript := preload("res://scripts/view3d.gd")
@@ -261,6 +263,10 @@ func _build_ui() -> void:
 	root.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	root.theme = _theme()
 	ui.add_child(root)
+	# Gold MartinB window bar on Android (Windows keeps its native title bar).
+	if WindowBar.wanted():
+		root.offset_top = WindowBar.H
+		add_child(WindowBar.new())
 
 	var top := PanelContainer.new()
 	top.set_anchors_and_offsets_preset(Control.PRESET_TOP_WIDE)
