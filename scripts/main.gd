@@ -8,6 +8,8 @@ extends Node2D
 const WorldScript := preload("res://scripts/world.gd")
 const VesselScript := preload("res://scripts/vessel.gd")
 const View3DScript := preload("res://scripts/view3d.gd")
+const CopilotScript := preload("res://scripts/copilot.gd")
+const UpdaterScript := preload("res://scripts/updater.gd")
 
 const POINT_ECHO := Vector2(980, 3250)
 const SEA_BUOY := Vector2(1000, 5000)
@@ -114,6 +116,20 @@ var radio_box: VBoxContainer
 var radio_title: Label
 var radio_keys := ""
 var radar: Control
+# HUD panels, placed by _layout() for phones, tablets, PC and Mac
+var hud_top: PanelContainer
+var hud_zoom: HBoxContainer
+var hud_radio: PanelContainer
+var hud_log: PanelContainer
+var hud_helm: PanelContainer
+var modal_panel: PanelContainer
+var modal_scroll: ScrollContainer
+var modal_options := 0
+var claude_button: Button
+var update_button: Button
+var update_url := ""
+var copilot
+var updater
 var zoom_buttons: Array = []
 var tele_buttons := {}
 var rudder_buttons := {}
@@ -158,6 +174,8 @@ func _ready() -> void:
 	cam.position_smoothing_enabled = true
 	cam.position_smoothing_speed = 4.0
 	_build_ui()
+	get_window().size_changed.connect(_apply_screen)
+	_apply_screen()
 	_show_language()
 
 
@@ -263,8 +281,13 @@ func _build_ui() -> void:
 	ui.add_child(root)
 
 	var top := PanelContainer.new()
+	hud_top = top
 	top.set_anchors_and_offsets_preset(Control.PRESET_TOP_WIDE)
-	top.offset_bottom = 48
+	top.offset_bottom = 60
+	var top_style: StyleBoxFlat = root.theme.get_stylebox("panel", "PanelContainer").duplicate()
+	top_style.content_margin_top = 8
+	top_style.content_margin_bottom = 8
+	top.add_theme_stylebox_override("panel", top_style)
 	root.add_child(top)
 	var th := HBoxContainer.new()
 	th.add_theme_constant_override("separation", 20)
@@ -276,6 +299,22 @@ func _build_ui() -> void:
 	top_nav = Label.new()
 	top_nav.add_theme_color_override("font_color", Color(0.95, 0.8, 0.45))
 	th.add_child(top_nav)
+	update_button = Button.new()
+	update_button.focus_mode = Control.FOCUS_NONE
+	update_button.add_theme_color_override("font_color", Color(0.95, 0.8, 0.45))
+	update_button.pressed.connect(func(): OS.shell_open(update_url))
+	update_button.hide()
+	th.add_child(update_button)
+	claude_button = Button.new()
+	claude_button.focus_mode = Control.FOCUS_NONE
+	for b in [update_button, claude_button]:
+		for st in ["normal", "hover", "pressed", "focus"]:
+			var sb: StyleBoxFlat = root.theme.get_stylebox(st, "Button").duplicate()
+			sb.content_margin_top = 7
+			sb.content_margin_bottom = 7
+			b.add_theme_stylebox_override(st, sb)
+	claude_button.pressed.connect(func(): copilot.open_panel())
+	th.add_child(claude_button)
 
 	radar = Control.new()
 	radar.custom_minimum_size = Vector2(190, 190)
@@ -289,6 +328,7 @@ func _build_ui() -> void:
 	root.add_child(radar)
 
 	var zb := HBoxContainer.new()
+	hud_zoom = zb
 	zb.set_anchors_preset(Control.PRESET_TOP_RIGHT)
 	zb.offset_left = -330
 	zb.offset_right = -12
@@ -300,16 +340,19 @@ func _build_ui() -> void:
 		btn.set_meta("sign", z[0])
 		btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		btn.focus_mode = Control.FOCUS_NONE
+		btn.custom_minimum_size = Vector2(0, 46)
 		btn.pressed.connect(_zoom.bind(z[1]))
 		zb.add_child(btn)
 		zoom_buttons.append(btn)
 	view_button = Button.new()
 	view_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	view_button.focus_mode = Control.FOCUS_NONE
+	view_button.custom_minimum_size = Vector2(0, 46)
 	view_button.pressed.connect(_cycle_view)
 	zb.add_child(view_button)
 
 	var rp := PanelContainer.new()
+	hud_radio = rp
 	rp.set_anchors_preset(Control.PRESET_TOP_RIGHT)
 	rp.offset_left = -340
 	rp.offset_right = -12
@@ -318,13 +361,14 @@ func _build_ui() -> void:
 	var rv := VBoxContainer.new()
 	rp.add_child(rv)
 	radio_title = Label.new()
-	radio_title.add_theme_font_size_override("font_size", 14)
+	radio_title.add_theme_font_size_override("font_size", 16)
 	radio_title.add_theme_color_override("font_color", Color(0.95, 0.8, 0.45))
 	rv.add_child(radio_title)
 	radio_box = VBoxContainer.new()
 	rv.add_child(radio_box)
 
 	var lp := PanelContainer.new()
+	hud_log = lp
 	lp.set_anchors_preset(Control.PRESET_BOTTOM_LEFT)
 	lp.offset_left = 12
 	lp.offset_right = 560
@@ -339,6 +383,7 @@ func _build_ui() -> void:
 	lp.add_child(log_box)
 
 	var hp := PanelContainer.new()
+	hud_helm = hp
 	hp.set_anchors_preset(Control.PRESET_BOTTOM_RIGHT)
 	hp.offset_left = -640
 	hp.offset_right = -12
@@ -375,6 +420,7 @@ func _build_ui() -> void:
 	toast.offset_right = 320
 	toast.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	toast.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	toast.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	toast.add_theme_font_size_override("font_size", 20)
 	toast.add_theme_color_override("font_outline_color", Color(0, 0, 0))
 	toast.add_theme_constant_override("outline_size", 6)
@@ -386,6 +432,8 @@ func _build_ui() -> void:
 	order_label.offset_left = -360
 	order_label.offset_right = 360
 	order_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	order_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	order_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	order_label.add_theme_font_size_override("font_size", 30)
 	order_label.add_theme_color_override("font_color", Color(1.0, 0.85, 0.45))
 	order_label.add_theme_color_override("font_outline_color", Color(0, 0, 0))
@@ -400,6 +448,7 @@ func _build_ui() -> void:
 	mc.set_anchors_preset(Control.PRESET_FULL_RECT)
 	modal_root.add_child(mc)
 	var mp := PanelContainer.new()
+	modal_panel = mp
 	mp.custom_minimum_size = Vector2(780, 0)
 	mc.add_child(mp)
 	var mv := VBoxContainer.new()
@@ -411,6 +460,7 @@ func _build_ui() -> void:
 	modal_title.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	mv.add_child(modal_title)
 	var sc := ScrollContainer.new()
+	modal_scroll = sc
 	sc.custom_minimum_size = Vector2(760, 240)
 	sc.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
 	mv.add_child(sc)
@@ -428,7 +478,118 @@ func _build_ui() -> void:
 	modal_buttons.add_theme_constant_override("separation", 8)
 	mv.add_child(modal_buttons)
 	modal_root.hide()
+	copilot = CopilotScript.new(self)
+	root.add_child(copilot)
+	updater = UpdaterScript.new()
+	updater.update_available.connect(_on_update_available)
+	updater.update_installed.connect(func(v): show_toast(T("Updated to %s. The new version opens next time.", "Mis à jour vers %s. La nouvelle version s'ouvre la prochaine fois.") % v))
+	add_child(updater)
 	_relabel()
+
+
+# ======================================================================
+# Screens: phones, tablets, PC and Mac (tests/screens.gd checks every layout)
+# ======================================================================
+
+## Picks the size of the 2D canvas from the screen's real size, so text and buttons stay readable
+## and easy to tap on a phone, and the HUD is laid out for portrait or landscape.
+func _apply_screen() -> void:
+	var win := get_window()
+	var px := Vector2(win.size)
+	if px.x < 1 or px.y < 1:
+		return
+	var density := DisplayServer.screen_get_scale()
+	if OS.has_feature("android") or OS.has_feature("ios"):
+		density = maxf(1.0, DisplayServer.screen_get_dpi() / 160.0)
+	var css := px / maxf(density, 0.5)
+	if css.x >= css.y:
+		# Landscape: 560 to 720 tall (a phone on its side gets the 560 one); at least 1280 wide on a PC or Mac,
+		# 1100 on smaller screens so a phone on its side keeps big enough buttons.
+		win.content_scale_size = Vector2i(1280 if css.x >= 1280.0 else 1100, int(clampf(css.y, 560.0, 720.0)))
+	else:
+		# Portrait: 480 to 900 wide, so a phone shows the HUD at about 70 % of a PC's size.
+		win.content_scale_size = Vector2i(int(clampf(css.x * 1.4, 480.0, 900.0)), 10)
+	_layout()
+
+
+func _canvas() -> Vector2:
+	return get_viewport().get_visible_rect().size
+
+
+func _place(c: Control, al: float, at: float, ar: float, ab: float, l: float, t: float, r: float, b: float) -> void:
+	c.anchor_left = al
+	c.anchor_top = at
+	c.anchor_right = ar
+	c.anchor_bottom = ab
+	c.offset_left = l
+	c.offset_top = t
+	c.offset_right = r
+	c.offset_bottom = b
+
+
+func _layout() -> void:
+	if hud_helm == null:
+		return
+	var cv := _canvas()
+	var portrait := cv.x < 1000.0
+	var short := cv.y < 700.0
+	var side := minf(330.0, cv.x - 24.0)
+	var rsize := 150.0 if (portrait or short) else 190.0
+	radar.custom_minimum_size = Vector2(rsize, rsize)
+	_place(radar, 1, 0, 1, 0, -12 - rsize, 70, -12, 70 + rsize)
+	_place(hud_zoom, 1, 0, 1, 0, -12 - side, 78 + rsize, -12, 124 + rsize)
+	hud_radio.grow_vertical = Control.GROW_DIRECTION_END
+	if portrait:
+		# Bottom up: helm, log, radio; the 3D view keeps the top half.
+		_place(hud_helm, 0, 1, 1, 1, 12, -128, -12, -12)
+		_place(hud_log, 0, 1, 1, 1, 12, -278, -12, -138)
+		_place(hud_radio, 0, 1, 1, 1, 12, -288, -12, -288)
+		hud_radio.grow_vertical = Control.GROW_DIRECTION_BEGIN
+	else:
+		_place(hud_helm, 1, 1, 1, 1, -640, -128, -12, -12)
+		_place(hud_log, 0, 1, 0, 1, 12, -200, minf(560.0, cv.x - 664.0), -12)
+		if short:
+			_place(hud_radio, 0, 0, 0, 0, 12, 70, 12 + side, 70)
+		else:
+			_place(hud_radio, 1, 0, 1, 0, -12 - side, 132 + rsize, -12, 132 + rsize)
+	# Narrow phones: slightly smaller helm and status text so French labels fit on one row.
+	var narrow := cv.x < 600.0
+	for b in tele_buttons.values() + rudder_buttons.values():
+		if narrow:
+			b.add_theme_font_size_override("font_size", 16)
+		else:
+			b.remove_theme_font_size_override("font_size")
+	if narrow:
+		top_nav.add_theme_font_size_override("font_size", 15)
+	else:
+		top_nav.remove_theme_font_size_override("font_size")
+	top_nav.get_parent().add_theme_constant_override("separation", 4 if narrow else 20)
+	claude_button.text = "✦" if narrow else "✦ Claude"
+	update_button.text = "⬇" if narrow else T("⬇ Update", "⬇ Mettre à jour")
+	var tw := minf(640.0, cv.x - 24.0)
+	_place(toast, 0.5, 0, 0.5, 0, -tw / 2, 74, tw / 2, 74)
+	var ow := minf(720.0, cv.x - 24.0)
+	_place(order_label, 0.5, 0.5, 0.5, 0.5, -ow / 2, 90, ow / 2, 150)
+	_layout_modal()
+	if copilot:
+		copilot.layout(cv)
+
+
+func _on_update_available(url: String) -> void:
+	update_url = url
+	update_button.show()
+	show_toast(T("A new version is ready: tap Update.", "Une nouvelle version est prête : touchez Mettre à jour."))
+
+
+func _layout_modal() -> void:
+	if modal_panel == null:
+		return
+	var cv := _canvas()
+	var w := minf(780.0, cv.x - 24.0)
+	modal_panel.custom_minimum_size = Vector2(w, 0)
+	# Title and buttons first; the text scrolls in what is left.
+	var room := cv.y - 24.0 - 20.0 - 12.0 * 3 - 80.0 - modal_options * 62.0
+	modal_scroll.custom_minimum_size = Vector2(w - 20.0, clampf(room, 110.0, 240.0 if cv.y < 900.0 else 360.0))
 
 
 func _relabel() -> void:
@@ -440,6 +601,7 @@ func _relabel() -> void:
 		b.text = T("Zoom ", "Zoom ") + str(b.get_meta("sign"))
 	if view_button:
 		view_button.text = view.view_name()
+	_layout()
 	radio_title.text = T("RADIO / ACTIONS  [Space]", "RADIO / ACTIONS  [Espace]")
 	radio_keys = "-"
 	world.lang = lang
@@ -457,11 +619,14 @@ func show_modal(title: String, body: String, options: Array, cb: Callable, extra
 	for c in modal_buttons.get_children():
 		c.queue_free()
 	modal_cb = cb
+	modal_options = options.size()
+	_layout_modal()
 	for i in options.size():
 		var b := Button.new()
 		b.text = options[i]
 		b.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		b.custom_minimum_size = Vector2(0, 46)
+		# A known width lets the button wrap its text to the right height.
+		b.custom_minimum_size = Vector2(modal_panel.custom_minimum_size.x - 20.0, 46)
 		b.alignment = HORIZONTAL_ALIGNMENT_LEFT
 		b.pressed.connect(_modal_pick.bind(i))
 		modal_buttons.add_child(b)
@@ -666,6 +831,8 @@ func _cycle_view() -> void:
 
 
 func _unhandled_input(event: InputEvent) -> void:
+	if copilot and copilot.visible:
+		return
 	if event is InputEventMouseButton and event.pressed:
 		if event.button_index == MOUSE_BUTTON_WHEEL_UP:
 			_zoom(1.1)
@@ -1204,12 +1371,13 @@ func _debrief(planned: String, history: String, options: Array, cb: Callable) ->
 		var l := Label.new()
 		l.text = PILLAR_NAME[lang][k]
 		l.custom_minimum_size = Vector2(140, 0)
+		l.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		grid.add_child(l)
 		var pb := ProgressBar.new()
 		pb.max_value = 100
 		pb.value = scores[k]
 		pb.show_percentage = false
-		pb.custom_minimum_size = Vector2(440, 22)
+		pb.custom_minimum_size = Vector2(clampf(modal_panel.custom_minimum_size.x - 260.0, 140.0, 440.0), 22)
 		grid.add_child(pb)
 		var n := Label.new()
 		n.text = str(scores[k])
