@@ -1,9 +1,19 @@
-name: Build web, Windows and Android
+name: Build web, Windows, Mac and Android
 
+# Every build of True North Command ships everywhere at once:
+#   checks   the headless playthrough (English and French) and the screen check (phones, tablets, PC, Mac)
+#   web      deployed to GitHub Pages (Settings > Pages > Source: GitHub Actions)
+#   windows  TrueNorthCommand.exe; installed copies swap in the new version by themselves
+#   mac      TrueNorthCommand-mac.zip (Apple silicon and Intel)
+#   android  TrueNorthCommand.apk, signed with the game's own key from GitHub secrets
+#   release  on main: Release v1.0.N with all of them, version.json for the updater and the source code,
+#            plus the rolling "latest" downloads the MartinB OS Hub links to
+# Pull requests run the same checks and builds without publishing.
 on:
   push:
     branches: [main]
     tags: ["v*"]
+  pull_request:
   workflow_dispatch:
 
 permissions:
@@ -11,8 +21,14 @@ permissions:
   pages: write
   id-token: write
 
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   GODOT_VERSION: "4.3"
+  TNC_VERSION: 1.0.${{ github.run_number }}
+  PUBLISH: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
 
 jobs:
   build:
@@ -34,11 +50,41 @@ jobs:
           unzip -q tpl.tpz && mv templates ~/.local/share/godot/export_templates/${GODOT_VERSION}.stable
           rm -f godot.zip tpl.tpz
 
-      - name: Configure Android signing (debug key for test builds)
+      - name: Stamp the version
+        run: |
+          sed -i "s/^config\/version=.*/config\/version=\"$TNC_VERSION\"/" project.godot
+          sed -i "s/^version\/code=.*/version\/code=${{ github.run_number }}/; s/^version\/name=.*/version\/name=\"$TNC_VERSION\"/" export_presets.cfg
+          sed -i "s/^application\/short_version=.*/application\/short_version=\"$TNC_VERSION\"/; s/^application\/version=.*/application\/version=\"$TNC_VERSION\"/" export_presets.cfg
+          grep -n "version" project.godot export_presets.cfg
+
+      # The game's Android key lives only in GitHub secrets, so every new APK installs over the last one.
+      # Pull requests build with a throwaway debug key and are never published.
+      - name: Android signing
+        env:
+          KEYSTORE_B64: ${{ secrets.TNC_KEYSTORE_B64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.TNC_KEYSTORE_PASSWORD }}
         run: |
           mkdir -p ~/.config/godot ~/keys
           keytool -keyalg RSA -genkeypair -alias androiddebugkey -keypass android -keystore ~/keys/debug.keystore \
             -storepass android -dname "CN=Android Debug,O=Android,C=US" -validity 9999 -deststoretype pkcs12
+          if [ -n "$KEYSTORE_B64" ]; then
+            echo "$KEYSTORE_B64" | base64 -d > ~/keys/release.keystore
+            {
+              echo "GODOT_ANDROID_KEYSTORE_RELEASE_PATH=$HOME/keys/release.keystore"
+              echo "GODOT_ANDROID_KEYSTORE_RELEASE_USER=tnc"
+              echo "GODOT_ANDROID_KEYSTORE_RELEASE_PASSWORD=$KEYSTORE_PASSWORD"
+            } >> "$GITHUB_ENV"
+          elif [ "$PUBLISH" = "true" ]; then
+            echo "::error::TNC_KEYSTORE_B64 is not set. Add the True North Command secrets (Settings > Secrets and variables > Actions) before releasing."
+            exit 1
+          else
+            echo "::notice::No release key on this build: the APK is signed with a debug key and is not published."
+            {
+              echo "GODOT_ANDROID_KEYSTORE_RELEASE_PATH=$HOME/keys/debug.keystore"
+              echo "GODOT_ANDROID_KEYSTORE_RELEASE_USER=androiddebugkey"
+              echo "GODOT_ANDROID_KEYSTORE_RELEASE_PASSWORD=android"
+            } >> "$GITHUB_ENV"
+          fi
           cat > ~/.config/godot/editor_settings-${GODOT_VERSION}.tres <<CFG
           [gd_resource type="EditorSettings" format=3]
 
@@ -50,7 +96,7 @@ jobs:
           CFG
           sed -i 's/^          //' ~/.config/godot/editor_settings-${GODOT_VERSION}.tres
 
-      - name: Import project and run the smoke test
+      - name: Play every mission (English and French)
         run: |
           godot --headless --import || true
           godot --headless -s tests/autoplay.gd | tee test.log
@@ -58,18 +104,22 @@ jobs:
           godot --headless -s tests/autoplay.gd -- fr | tee test_fr.log
           grep -q "ALL MISSIONS COMPLETE lang=fr" test_fr.log
 
-      - name: Export builds
-        env:
-          GODOT_ANDROID_KEYSTORE_RELEASE_USER: androiddebugkey
-          GODOT_ANDROID_KEYSTORE_RELEASE_PASSWORD: android
+      - name: Check phones, tablets, PCs and Macs
         run: |
-          export GODOT_ANDROID_KEYSTORE_RELEASE_PATH="$HOME/keys/debug.keystore"
-          mkdir -p build/web build/windows build/android
+          godot --headless -s tests/screens.gd | tee screens.log
+          grep -q "All screens fit" screens.log
+
+      - name: Export builds
+        run: |
+          mkdir -p build/web build/windows build/android build/mac
           godot --headless --export-release "Web" build/web/index.html
           godot --headless --export-release "Windows" build/windows/TrueNorthCommand.exe
           godot --headless --export-release "Android" build/android/TrueNorthCommand.apk
+          godot --headless --export-release "macOS" build/mac/TrueNorthCommand-mac.zip
           rm -f build/android/*.idsig
           ls -la build/*
+          test -s build/windows/TrueNorthCommand.exe && test -s build/android/TrueNorthCommand.apk && test -s build/mac/TrueNorthCommand-mac.zip
+          echo "{\"build\": ${{ github.run_number }}, \"version\": \"$TNC_VERSION\"}" > build/version.json
 
       - uses: actions/upload-artifact@v4
         with:
@@ -79,13 +129,41 @@ jobs:
         with:
           name: TrueNorthCommand-android
           path: build/android/TrueNorthCommand.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: TrueNorthCommand-mac
+          path: build/mac/TrueNorthCommand-mac.zip
       - uses: actions/upload-pages-artifact@v3
+        if: env.PUBLISH == 'true'
         with:
           path: build/web
 
+      - name: Publish Release v1.0.N (main branch)
+        if: env.PUBLISH == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ env.TNC_VERSION }}
+          target_commitish: ${{ github.sha }}
+          name: True North Command ${{ env.TNC_VERSION }}
+          make_latest: true
+          body: |
+            **True North Command: Operation Alpha** — English and French.
+
+            - **Web**: https://fisbal.github.io/true-north-command/
+            - **Android**: TrueNorthCommand.apk (open it from the Files app, then Install). Newer versions install over it.
+            - **Windows**: TrueNorthCommand.exe, no installer needed. It updates itself.
+            - **Mac** (Apple silicon and Intel): TrueNorthCommand-mac.zip. Unzip, then the first time right-click the app and choose Open.
+            - Installed copies check for a new version when they start.
+            - Source code: the zip and tar.gz below
+          files: |
+            build/windows/TrueNorthCommand.exe
+            build/android/TrueNorthCommand.apk
+            build/mac/TrueNorthCommand-mac.zip
+            build/version.json
+
       - name: Publish rolling "latest" downloads (main branch)
         # Stable links used by the MartinB OS Hub: .../releases/download/latest/TrueNorthCommand.apk and .exe
-        if: github.ref == 'refs/heads/main'
+        if: env.PUBLISH == 'true'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: latest
@@ -93,12 +171,14 @@ jobs:
           prerelease: true
           make_latest: false
           body: |
-            Construit automatiquement à chaque mise à jour du jeu.
+            Construit automatiquement à chaque mise à jour du jeu (version ${{ env.TNC_VERSION }}).
             - **TrueNorthCommand.apk** : Android (ouvre-le depuis l'app Fichiers).
             - **TrueNorthCommand.exe** : Windows, aucun installateur nécessaire.
+            - **TrueNorthCommand-mac.zip** : Mac.
           files: |
             build/windows/TrueNorthCommand.exe
             build/android/TrueNorthCommand.apk
+            build/mac/TrueNorthCommand-mac.zip
 
       - name: Attach builds to the GitHub Release (tags only)
         if: startsWith(github.ref, 'refs/tags/v')
@@ -107,11 +187,12 @@ jobs:
           files: |
             build/windows/TrueNorthCommand.exe
             build/android/TrueNorthCommand.apk
+            build/mac/TrueNorthCommand-mac.zip
 
   pages:
     # Needs Settings → Pages → Source: "GitHub Actions" (free on public repos).
     needs: build
-    if: github.ref == 'refs/heads/main'
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     continue-on-error: true
     environment:
