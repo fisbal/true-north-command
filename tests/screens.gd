@@ -66,8 +66,34 @@ func _run() -> void:
 			main._launch_helo()
 			await _frames(4)
 			await _check(lang, size_name, "mission 2 helm")
+	# Turning the device: the HUD must re-fit when a phone or tablet goes from upright to sideways and back,
+	# and a two-finger pinch must zoom the chart.
+	for size_name in ["phone", "tablet"]:
+		var upright: Vector2i = SIZES[size_name]
+		root.size = upright
+		main.queue_free()
+		await _frames(1)
+		main = load("res://main.tscn").instantiate()
+		root.add_child(main)
+		await _frames(2)
+		main._on_language(1)
+		main._start_mission(1)
+		main.modal_root.hide()
+		main._start_sail("test", [])
+		for turn in [["upright", upright], ["turned sideways", Vector2i(upright.y, upright.x)], ["turned back upright", upright]]:
+			root.size = turn[1]
+			await _check("fr", size_name + " " + turn[0], "mission 1 helm")
+		var before: float = main.zoom_level
+		var pinch := InputEventMagnifyGesture.new()
+		pinch.factor = 1.5
+		pinch.position = Vector2(root.size) / 2.0
+		main._unhandled_input(pinch)
+		if main.zoom_level <= before:
+			problems.append("%s: a two-finger pinch does not zoom" % size_name)
+	if ProjectSettings.get_setting("display/window/handheld/orientation") != 6:
+		problems.append("project.godot: the game is locked to one orientation (use window/handheld/orientation=6)")
 	if problems.is_empty():
-		print("All screens fit: %d screens (%d sizes x 2 languages)." % [views, SIZES.size()])
+		print("All screens fit: %d screens (%d sizes x 2 languages, plus turning phones and tablets both ways)." % [views, SIZES.size()])
 		quit(0)
 	else:
 		for p in problems:

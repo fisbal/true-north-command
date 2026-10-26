@@ -833,6 +833,8 @@ func _cycle_view() -> void:
 func _unhandled_input(event: InputEvent) -> void:
 	if copilot and copilot.visible:
 		return
+	if event is InputEventMagnifyGesture:  # two-finger pinch on phones, tablets and trackpads
+		_zoom(event.factor)
 	if event is InputEventMouseButton and event.pressed:
 		if event.button_index == MOUSE_BUTTON_WHEEL_UP:
 			_zoom(1.1)
